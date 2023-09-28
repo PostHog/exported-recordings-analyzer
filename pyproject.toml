@@ -1,0 +1,18 @@
+[tool.poetry]
+name = "recordings-analyser"
+version = "0.1.0"
+description = ""
+authors = ["Paul D'Ambra <paul@posthog.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.9"
+ijson = "^3.2.3"
+black = "^23.9.1"
+simplejson = "^3.19.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
