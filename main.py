@@ -78,6 +78,7 @@ def analyse_exported_recording(file_path: str) -> None:
     message_type_counts = {}
     incremental_snapshot_event_source_counts: Dict[str, SizedCount] = {}
     mutation_addition_counts: Dict[str, SizedCount] = {}
+    mutation_attributes_counts: Dict[str, SizedCount] = {}
     addition_sizes: List[int] = []
     mutation_removal_count = 0
 
@@ -111,6 +112,19 @@ def analyse_exported_recording(file_path: str) -> None:
                             mutation_addition_counts[node_type] += addition_size
                             addition_sizes.append(addition_size)
 
+                        for altered_attribute in snapshot["data"]["attributes"]:
+                            # this is an array of dicts. each should have `attributes`
+                            # and that is a dict whose key is the attibute
+                            changeds = altered_attribute["attributes"].keys()
+                            for changed in changeds:
+                                if changed not in mutation_attributes_counts:
+                                    mutation_attributes_counts[changed] = SizedCount(
+                                        0, 0
+                                    )
+                                mutation_attributes_counts[changed] += len(
+                                    json.dumps(altered_attribute["attributes"][changed])
+                                )
+
     print("message_type_counts")
     print(message_type_counts)
     print("incremental_snapshot_event_source_counts")
@@ -118,10 +132,12 @@ def analyse_exported_recording(file_path: str) -> None:
     print("mutation_removal_count: " + str(mutation_removal_count))
     print("mutation_addition_counts")
     print(mutation_addition_counts)
+    print("mutation_attributes_counts")
+    print(mutation_attributes_counts)
 
 
 if __name__ == "__main__":
     # TODO get the file path from the command line
     analyse_exported_recording(
-        "/Users/paul/Downloads/export-018a8030-524e-7a80-a82c-3e23ba4ebbd2.ph-recording.json"
+        "/Users/paul/Downloads/export-018af09a-5995-7334-8970-ac2bf0821e92.ph-recording.json"
     )
