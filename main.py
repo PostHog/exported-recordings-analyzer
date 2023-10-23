@@ -101,7 +101,8 @@ class Analysis:
     message_type_counts: Dict[str, int]
     incremental_snapshot_event_source_counts: Dict[str, SizedCount]
     mutation_addition_counts: Dict[str, SizedCount]
-    mutation_attributes_counts: Dict[str, SizedCount]
+    grouped_mutation_attributes_counts: Dict[str, SizedCount]
+    individual_mutation_attributes_counts: Dict[str, SizedCount]
     addition_sizes: List[int]
     mutation_removal_count: SizedCount
     text_mutation_count: SizedCount
@@ -113,7 +114,8 @@ class Analysis:
             message_type_counts={},
             incremental_snapshot_event_source_counts={},
             mutation_addition_counts={},
-            mutation_attributes_counts={},
+            grouped_mutation_attributes_counts={},
+            individual_mutation_attributes_counts={},
             addition_sizes=[],
             mutation_removal_count=SizedCount(0, 0),
             text_mutation_count=SizedCount(0, 0),
@@ -126,9 +128,13 @@ class Analysis:
                 other.mutation_removal_count
             ),
             addition_sizes=self.addition_sizes + other.addition_sizes,
-            mutation_attributes_counts=_combine_sized_count_dicts(
-                self.mutation_attributes_counts,
-                other.mutation_attributes_counts,
+            grouped_mutation_attributes_counts=_combine_sized_count_dicts(
+                self.grouped_mutation_attributes_counts,
+                other.grouped_mutation_attributes_counts,
+            ),
+            individual_mutation_attributes_counts=_combine_sized_count_dicts(
+                self.individual_mutation_attributes_counts,
+                other.individual_mutation_attributes_counts,
             ),
             mutation_addition_counts=_combine_sized_count_dicts(
                 self.mutation_addition_counts,
@@ -150,17 +156,25 @@ class Analysis:
         )
 
     def __str__(self) -> str:
-        mutation_overview = {
-            **self.mutation_addition_counts,
-            "removal": self.mutation_removal_count,
-            "text": self.text_mutation_count,
-            **self.mutation_attributes_counts,
-        }
-        total_count = 0
-        total_size = 0
-        for sized_count in mutation_overview.values():
-            total_count += sized_count.count
-            total_size += sized_count.size
+        # splat all the sized dictionaries together
+        # sort by size (desc)
+        # and then print top 10 items on a separate line
+        mutation_overview = "\n".join(
+            [
+                f"{k}: {v}"
+                for k, v in sorted(
+                    {
+                        **self.mutation_addition_counts,
+                        "removal": self.mutation_removal_count,
+                        "text": self.text_mutation_count,
+                        **self.grouped_mutation_attributes_counts,
+                        **self.individual_mutation_attributes_counts,
+                    }.items(),
+                    key=lambda item: item[1].size,
+                    reverse=True,
+                )
+            ][0:10]
+        )
 
         return f"""message_type_counts
 {self.message_type_counts}
@@ -169,21 +183,19 @@ incremental_snapshot_event_source_counts
     mutation_removal_count: {str(self.mutation_removal_count)}
     mutation_addition_counts
     {self.mutation_addition_counts}
-    mutation_attributes_counts"
-    {self.mutation_attributes_counts}
-    "text mutations"
+    individual_mutation_attributes_counts
+    {self.individual_mutation_attributes_counts}
+    grouped_mutation_attributes_counts
+    (attribute mutations arrive in arrays - this reports the attributes that come together)
+    {self.grouped_mutation_attributes_counts}
+    text mutations
     {self.text_mutation_count}
 unterminated_lines_count
 {len(self.unterminated_lines)}
 unterminated_lines
 {self.unterminated_lines}
 
-Mutations:
-
-incremental_tracking: {self.incremental_snapshot_event_source_counts["Mutation"]}
-mutation overview:
-    total mutations: {total_count}
-    overall size: {sizeof_fmt(total_size)}
+Top 10 Mutations by size:
 {mutation_overview}
 """
 
@@ -287,6 +299,24 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                     analysis.mutation_addition_counts[node_type] += addition_size
                     analysis.addition_sizes.append(addition_size)
 
+                ## attributes individually
+                for altered_attribute in snapshot["data"]["attributes"]:
+                    # this is an array of dicts. each should have `attributes`
+                    # and that is a dict whose key is the attibute
+                    changeds = altered_attribute["attributes"].keys()
+                    for changed in changeds:
+                        if (
+                            changed
+                            not in analysis.individual_mutation_attributes_counts
+                        ):
+                            analysis.individual_mutation_attributes_counts[
+                                changed
+                            ] = SizedCount(0, 0)
+                        analysis.individual_mutation_attributes_counts[changed] += len(
+                            json.dumps(altered_attribute["attributes"][changed])
+                        )
+
+                # attributes grouped
                 for mutated_attribute in snapshot["data"]["attributes"]:
                     # attribute mutations come together in a dict
                     # tracking them individually gives confusing counts
@@ -294,11 +324,16 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                         mutated_attribute["attributes"].keys()
                     )
 
-                    if attribute_fingerprint not in analysis.mutation_attributes_counts:
-                        analysis.mutation_attributes_counts[
+                    if (
+                        attribute_fingerprint
+                        not in analysis.grouped_mutation_attributes_counts
+                    ):
+                        analysis.grouped_mutation_attributes_counts[
                             attribute_fingerprint
                         ] = SizedCount(0, 0)
-                    analysis.mutation_attributes_counts[attribute_fingerprint] += len(
+                    analysis.grouped_mutation_attributes_counts[
+                        attribute_fingerprint
+                    ] += len(
                         json.dumps(
                             snapshot["data"]["attributes"], separators=(",", ":")
                         )
