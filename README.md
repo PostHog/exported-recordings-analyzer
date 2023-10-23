@@ -4,11 +4,21 @@ Sometimes a customer reports we can't play their recording.
 
 The browser is frozen, so we can't use the debug tools.
 
+## How to get the data
+
+### wait for the browser to unfreeze
+
 If we're patient we can wait for the browser to unfreeze, and then export the recording as a single JSON file.
 
-Often, that's so big that we can't open it in a text editor.
+this gives you a single file
 
-And so the analyzer was born.
+### download from S3
+
+find the recording in s3 and download the folder
+
+this gives you a directory of files
+
+# What does it do?
 
 It prints out useful information like:
 
