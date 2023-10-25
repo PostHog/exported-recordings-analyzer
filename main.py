@@ -1,9 +1,11 @@
 import dataclasses
 import os
+from datetime import datetime
+
 from simplejson import JSONDecodeError
 
 import simplejson as json
-from typing import Dict, List, Literal
+from typing import Dict, List, Literal, Optional
 
 import ijson
 
@@ -107,6 +109,9 @@ class Analysis:
     mutation_removal_count: SizedCount
     text_mutation_count: SizedCount
     unterminated_lines: List[UnterminatedLine]
+    first_timestamp: Optional[int]
+    last_timestamp: Optional[int]
+    full_snapshot_timestamps: List[int]
 
     @staticmethod
     def empty() -> "Analysis":
@@ -120,6 +125,9 @@ class Analysis:
             mutation_removal_count=SizedCount(0, 0),
             text_mutation_count=SizedCount(0, 0),
             unterminated_lines=[],
+            first_timestamp=None,
+            last_timestamp=None,
+            full_snapshot_timestamps=[],
         )
 
     def __add__(self, other: "Analysis") -> "Analysis":
@@ -153,7 +161,26 @@ class Analysis:
                 other.text_mutation_count
             ),
             unterminated_lines=self.unterminated_lines + other.unterminated_lines,
+            # TODO this is not how you compare datetime strings :see no evil monkey:
+            first_timestamp=self.min_of_two_timestamps(other),
+            last_timestamp=self.max_of_two_timestamps(other),
+            full_snapshot_timestamps=self.full_snapshot_timestamps
+            + other.full_snapshot_timestamps,
         )
+
+    def max_of_two_timestamps(self, other):
+        if self.last_timestamp is None:
+            return other.last_timestamp
+        if other.last_timestamp is None:
+            return self.last_timestamp
+        return max(self.last_timestamp, other.last_timestamp)
+
+    def min_of_two_timestamps(self, other):
+        if self.first_timestamp is None:
+            return other.first_timestamp
+        if other.first_timestamp is None:
+            return self.first_timestamp
+        return min(self.first_timestamp, other.first_timestamp)
 
     def __str__(self) -> str:
         # splat all the sized dictionaries together
@@ -176,7 +203,13 @@ class Analysis:
             ][0:10]
         )
 
-        return f"""message_type_counts
+        return f"""
+session start: {datetime.fromtimestamp(self.first_timestamp/1000).isoformat()}
+session duration: {datetime.fromtimestamp(self.last_timestamp/1000) - datetime.fromtimestamp(self.first_timestamp/1000)}
+full snapshot timestamps
+{[f"{datetime.fromtimestamp(x/1000).isoformat()} (after {(datetime.fromtimestamp(x/1000) - datetime.fromtimestamp(self.first_timestamp/1000))})" for x in self.full_snapshot_timestamps]}
+
+message_type_counts
 {self.message_type_counts}
 incremental_snapshot_event_source_counts
 {self.incremental_snapshot_event_source_counts}
@@ -266,7 +299,18 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
     analysis = Analysis.empty()
 
     for snapshot in list_of_snapshots:
+        if analysis.first_timestamp is None:
+            analysis.first_timestamp = snapshot["timestamp"]
+        if analysis.last_timestamp is None:
+            analysis.last_timestamp = snapshot["timestamp"]
+
+        analysis.first_timestamp = min(analysis.first_timestamp, snapshot["timestamp"])
+        analysis.last_timestamp = max(analysis.last_timestamp, snapshot["timestamp"])
+
         event_type = event_types[snapshot.get("type", -1)]
+
+        if event_type == "FullSnapshot":
+            analysis.full_snapshot_timestamps.append(snapshot["timestamp"])
 
         if event_type not in analysis.message_type_counts:
             analysis.message_type_counts[event_type] = 0
@@ -364,8 +408,8 @@ def analyse_recording(file_path: str, source: Literal["s3", "export"]) -> None:
 
 if __name__ == "__main__":
     # TODO get the file path from the command line
-    # analyse_recording(
-    #     "/Users/paul/Downloads/export-018af09a-5995-7334-8970-ac2bf0821e92.ph-recording.json",
-    #     "export",
-    # )
-    analyse_recording("/Users/paul/Downloads/huge-recording/", "s3")
+    analyse_recording(
+        "/Users/paul/Downloads/export-018b6681-dbfd-74e3-b1b8-2e3045abb0ed.ph-recording.json",
+        "export",
+    )
+    # analyse_recording("/Users/paul/Downloads/huge-recording/", "s3")
