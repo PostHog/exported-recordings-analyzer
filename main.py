@@ -39,7 +39,11 @@ incremental_snapshot_event_source = {
 }
 
 node_types = {
-    0: "wat",
+    # rrweb source code https://github.com/rrweb-io/rrweb/blob/master/packages/rrdom/src/document.ts#L781C3-L781C14
+    # their comment for zero says:
+    # // This isn't a node type. Enum type value starts from zero but NodeType value starts from 1.
+    # but we see mutations with 0 as note type 🤷️
+    0: "PLACEHOLDER",
     1: "Element",
     2: "Attribute",
     3: "Text",
@@ -105,6 +109,7 @@ class Analysis:
     mutation_addition_counts: Dict[str, SizedCount]
     grouped_mutation_attributes_counts: Dict[str, SizedCount]
     individual_mutation_attributes_counts: Dict[str, SizedCount]
+    plugin_counts: Dict[str, SizedCount]
     addition_sizes: List[int]
     mutation_removal_count: SizedCount
     text_mutation_count: SizedCount
@@ -112,6 +117,7 @@ class Analysis:
     first_timestamp: Optional[int]
     last_timestamp: Optional[int]
     full_snapshot_timestamps: List[int]
+    isAttachIFrameCount: int
 
     @staticmethod
     def empty() -> "Analysis":
@@ -128,10 +134,15 @@ class Analysis:
             first_timestamp=None,
             last_timestamp=None,
             full_snapshot_timestamps=[],
+            isAttachIFrameCount=0,
+            plugin_counts={},
         )
 
     def __add__(self, other: "Analysis") -> "Analysis":
         return Analysis(
+            plugin_counts=_combine_sized_count_dicts(
+                self.plugin_counts, other.plugin_counts
+            ),
             mutation_removal_count=self.mutation_removal_count.combine(
                 other.mutation_removal_count
             ),
@@ -161,11 +172,11 @@ class Analysis:
                 other.text_mutation_count
             ),
             unterminated_lines=self.unterminated_lines + other.unterminated_lines,
-            # TODO this is not how you compare datetime strings :see no evil monkey:
             first_timestamp=self.min_of_two_timestamps(other),
             last_timestamp=self.max_of_two_timestamps(other),
             full_snapshot_timestamps=self.full_snapshot_timestamps
             + other.full_snapshot_timestamps,
+            isAttachIFrameCount=self.isAttachIFrameCount + other.isAttachIFrameCount,
         )
 
     def max_of_two_timestamps(self, other):
@@ -227,6 +238,11 @@ unterminated_lines_count
 {len(self.unterminated_lines)}
 unterminated_lines
 {self.unterminated_lines}
+iframes?
+{self.isAttachIFrameCount}
+
+plugins
+{self.plugin_counts}
 
 Top 10 Mutations by size:
 {mutation_overview}
@@ -281,7 +297,7 @@ def analyse_s3_file(file_path: str) -> Analysis:
 
 
 def ensure_all_mutation_types_are_handled(data: Dict) -> None:
-    handled_mutations = ["removes", "adds", "attributes", "texts"]
+    handled_mutations = ["removes", "adds", "attributes", "texts", "isAttachIframe"]
     ignored_keys = ["source"]
     ignore_list = handled_mutations + ignored_keys
     mutations_present = data.keys()
@@ -309,6 +325,14 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
 
         event_type = event_types[snapshot.get("type", -1)]
 
+        if event_type == "Plugin":
+            plugin_name = snapshot["data"]["plugin"]
+            if plugin_name not in analysis.plugin_counts:
+                analysis.plugin_counts[plugin_name] = SizedCount(0, 0)
+            analysis.plugin_counts[plugin_name] += len(
+                json.dumps(snapshot["data"], separators=(",", ":"))
+            )
+
         if event_type == "FullSnapshot":
             analysis.full_snapshot_timestamps.append(snapshot["timestamp"])
 
@@ -329,6 +353,12 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
             if source_ == "Mutation":
                 # mutations we handle
                 ensure_all_mutation_types_are_handled(snapshot["data"])
+
+                if snapshot["data"].get("isAttachIframe", False):
+                    # these have adds, removes, texts, and attributes like other mutations
+                    # let's mostly ignore them right now
+                    # TODO handle them
+                    analysis.isAttachIFrameCount += 1
 
                 for removal in snapshot["data"]["removes"]:
                     analysis.mutation_removal_count += len(
@@ -408,8 +438,8 @@ def analyse_recording(file_path: str, source: Literal["s3", "export"]) -> None:
 
 if __name__ == "__main__":
     # TODO get the file path from the command line
-    analyse_recording(
-        "/Users/paul/Downloads/export-018b6681-dbfd-74e3-b1b8-2e3045abb0ed.ph-recording.json",
-        "export",
-    )
-    # analyse_recording("/Users/paul/Downloads/huge-recording/", "s3")
+    # analyse_recording(
+    #     "/Users/paul/Downloads/export-018b6681-dbfd-74e3-b1b8-2e3045abb0ed.ph-recording.json",
+    #     "export",
+    # )
+    analyse_recording("/Users/paul/Downloads/many-console-maybe/", "s3")
