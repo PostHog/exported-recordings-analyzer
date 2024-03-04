@@ -105,7 +105,14 @@ def analyse_s3_file(file_path: str) -> Analysis:
 
 
 def ensure_all_mutation_types_are_handled(data: Dict) -> None:
-    handled_mutations = ["removes", "adds", "attributes", "texts", "isAttachIframe"]
+    handled_mutations = [
+        "removes",
+        "adds",
+        "attributes",
+        "texts",
+        "isAttachIframe",
+        "updates",  # mobile
+    ]
     ignored_keys = ["source"]
     ignore_list = handled_mutations + ignored_keys
     mutations_present = data.keys()
@@ -177,38 +184,64 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                     # TODO handle them
                     analysis.isAttachIFrameCount += 1
 
-                for removal in snapshot["data"]["removes"]:
+                for removal in snapshot["data"].get("removes", []):
                     analysis.mutation_removal_count += len(
                         json.dumps(removal, separators=(",", ":"))
                     )
 
-                for addition in snapshot["data"]["adds"]:
-                    node_type = node_types[addition["node"]["type"]]
-                    if node_type not in analysis.mutation_addition_counts:
-                        analysis.mutation_addition_counts[node_type] = SizedCount(0, 0)
-                    addition_size = len(json.dumps(addition, separators=(",", ":")))
-                    analysis.mutation_addition_counts[node_type] += addition_size
-                    analysis.addition_sizes.append(addition_size)
+                for addition in snapshot["data"].get("adds", []):
+                    if "node" in addition:
+                        node_type = node_types[addition["node"]["type"]]
+                        if node_type not in analysis.mutation_addition_counts:
+                            analysis.mutation_addition_counts[node_type] = SizedCount(
+                                0, 0
+                            )
+                        addition_size = len(json.dumps(addition, separators=(",", ":")))
+                        analysis.mutation_addition_counts[node_type] += addition_size
+                        analysis.addition_sizes.append(addition_size)
+
+                        # adds changes by value, so we can find particular additions that are adding to size
+                        keyable_value = addition["node"].get(
+                            "textContent", json.dumps(addition["node"])
+                        )[:300]
+                        if keyable_value not in analysis.mutation_addition_by_value:
+                            analysis.mutation_addition_by_value[
+                                keyable_value
+                            ] = SizedCount(0, 0)
+                        analysis.mutation_addition_by_value[
+                            keyable_value
+                        ] += addition_size
+                    else:
+                        # print("ooh a mobile recording")
+                        # print(json.dumps(addition, separators=(",", ":")))
+                        pass
 
                 ## attributes individually
-                for altered_attribute in snapshot["data"]["attributes"]:
-                    # this is an array of dicts. each should have `attributes`
-                    # and that is a dict whose key is the attibute
-                    changeds = altered_attribute["attributes"].keys()
-                    for changed in changeds:
-                        if (
-                            changed
-                            not in analysis.individual_mutation_attributes_counts
-                        ):
+                for altered_attribute in snapshot["data"].get("attributes", []):
+                    if "attributes" not in altered_attribute:
+                        # print("ooh a mobile recording")
+                        # print(json.dumps(altered_attribute, separators=(",", ":")))
+                        pass
+                    else:
+                        # this is an array of dicts. each should have `attributes`
+                        # and that is a dict whose key is the attibute
+                        changeds = altered_attribute["attributes"].keys()
+                        for changed in changeds:
+                            if (
+                                changed
+                                not in analysis.individual_mutation_attributes_counts
+                            ):
+                                analysis.individual_mutation_attributes_counts[
+                                    changed
+                                ] = SizedCount(0, 0)
                             analysis.individual_mutation_attributes_counts[
                                 changed
-                            ] = SizedCount(0, 0)
-                        analysis.individual_mutation_attributes_counts[changed] += len(
-                            json.dumps(altered_attribute["attributes"][changed])
-                        )
+                            ] += len(
+                                json.dumps(altered_attribute["attributes"][changed])
+                            )
 
                 # attributes grouped
-                for mutated_attribute in snapshot["data"]["attributes"]:
+                for mutated_attribute in snapshot["data"].get("attributes", []):
                     # attribute mutations come together in a dict
                     # tracking them individually gives confusing counts
                     attribute_fingerprint = "---".join(
@@ -230,7 +263,7 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                         )
                     )
 
-                for text in snapshot["data"]["texts"]:
+                for text in snapshot["data"].get("texts", []):
                     analysis.text_mutation_count += len(text)
 
     return analysis
@@ -242,7 +275,7 @@ def analyse_recording(file_path: str, source: Literal["s3", "export"]) -> None:
     if source == "export":
         analysis = analyse_exported_file(file_path)
     elif source == "s3":
-        # open each file in the provided directory
+        # open each file in the provided directoryatch
         sorted_files = sorted(os.listdir(file_path))
         for file_name in sorted_files:
             print(f"processing file: {file_name}")
@@ -255,8 +288,8 @@ def analyse_recording(file_path: str, source: Literal["s3", "export"]) -> None:
 
 if __name__ == "__main__":
     # TODO get the file path from the command line
-    # analyse_recording(
-    #     "/Users/paul/Downloads/export-018b6681-dbfd-74e3-b1b8-2e3045abb0ed.ph-recording.json",
-    #     "export",
-    # )
-    analyse_recording("/Users/paul/Downloads/another/", "s3")
+    analyse_recording(
+        "/Users/paul/Downloads/export-018dfa67-c7a9-7c6f-86c9-8ef74494c0b9.ph-recording.json",
+        "export",
+    )
+    # analyse_recording("/Users/paul/Downloads/another/", "s3")

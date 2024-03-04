@@ -64,6 +64,7 @@ class Analysis:
     last_timestamp: Optional[int]
     full_snapshot_timestamps: List[int]
     isAttachIFrameCount: int
+    mutation_addition_by_value: Dict[str, SizedCount]
 
     @staticmethod
     def empty() -> "Analysis":
@@ -83,6 +84,7 @@ class Analysis:
             isAttachIFrameCount=0,
             plugin_counts={},
             console_log_counts={},
+            mutation_addition_by_value={},
         )
 
     def __add__(self, other: "Analysis") -> "Analysis":
@@ -108,6 +110,9 @@ class Analysis:
             mutation_addition_counts=_combine_sized_count_dicts(
                 self.mutation_addition_counts,
                 other.mutation_addition_counts,
+            ),
+            mutation_addition_by_value=_combine_sized_count_dicts(
+                self.mutation_addition_by_value, other.mutation_addition_by_value
             ),
             incremental_snapshot_event_source_counts=_combine_sized_count_dicts(
                 self.incremental_snapshot_event_source_counts,
@@ -157,6 +162,8 @@ class Analysis:
             }
         )
 
+        additions_overview = self.top_ten_sized(self.mutation_addition_by_value)
+
         console_log_overview = self.top_ten_sized(self.console_log_counts)
 
         return f"""
@@ -193,13 +200,17 @@ console logs:
 
 Top 10 Mutations by size:
 {mutation_overview}
+
+Largest additions:
+{additions_overview}
+
 """
 
     @staticmethod
-    def top_ten_sized(candidates: Dict[str, SizedCount]) -> str:
+    def top_ten_sized(candidates: Dict[str, SizedCount], truncate: bool = False) -> str:
         return "\n".join(
             [
-                f"{k}: {v}"
+                f"{k[:20] if truncate else k}: {v}"
                 for k, v in sorted(
                     candidates.items(),
                     key=lambda item: item[1].size,
