@@ -36,5 +36,13 @@ In this recording, we can see it's almost all attribute additions that are causi
 
 ## Usage
 
+get started
+
+```
+uv venv --python 3.11
+uv venv --python 3.11
+uv pip install -r pyproject.toml
+```
+
 Edit `main.py` to point at your downloaded recording and run it.
 

@@ -289,7 +289,7 @@ def analyse_recording(file_path: str, source: Literal["s3", "export"]) -> None:
 if __name__ == "__main__":
     # TODO get the file path from the command line
     analyse_recording(
-        "/Users/paul/Downloads/export-018dfa67-c7a9-7c6f-86c9-8ef74494c0b9.ph-recording.json",
+        "/Users/paul/Downloads/large-sessions/export-0192D664-2FD9-7458-B062-3AD3A52CBD67.ph-recording.json",
         "export",
     )
     # analyse_recording("/Users/paul/Downloads/another/", "s3")
