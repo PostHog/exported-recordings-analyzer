@@ -1,6 +1,6 @@
-import dataclasses
+import gzip
 import os
-from datetime import datetime
+
 
 from simplejson import JSONDecodeError
 
@@ -125,6 +125,20 @@ def ensure_all_mutation_types_are_handled(data: Dict) -> None:
         raise ValueError(f"Unhandled mutations: {unhandled_mutations}")
 
 
+
+
+
+def maybe_decompress(x: str | dict| None) -> dict|None:
+    if x is None:
+        return None
+    if isinstance(x, str):
+        # Decode the decompressed bytes to a UTF-8 string
+        decompressed_str = gzip.decompress(x.encode("latin-1")).decode("utf-8")
+        # Parse the JSON string
+        return json.loads(decompressed_str)
+    return x
+
+
 # TODO ijson returns any :'(
 def analyse_snapshots(list_of_snapshots: any) -> Analysis:
     analysis = Analysis.empty()
@@ -184,12 +198,12 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                     # TODO handle them
                     analysis.isAttachIFrameCount += 1
 
-                for removal in snapshot["data"].get("removes", []):
+                for removal in maybe_decompress(snapshot["data"].get("removes", [])):
                     analysis.mutation_removal_count += len(
                         json.dumps(removal, separators=(",", ":"))
                     )
 
-                for addition in snapshot["data"].get("adds", []):
+                for addition in maybe_decompress(snapshot["data"].get("adds", [])):
                     if "node" in addition:
                         node_type = node_types[addition["node"]["type"]]
                         if node_type not in analysis.mutation_addition_counts:
@@ -217,7 +231,7 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                         pass
 
                 ## attributes individually
-                for altered_attribute in snapshot["data"].get("attributes", []):
+                for altered_attribute in maybe_decompress(snapshot["data"].get("attributes", [])):
                     if "attributes" not in altered_attribute:
                         # print("ooh a mobile recording")
                         # print(json.dumps(altered_attribute, separators=(",", ":")))
@@ -241,7 +255,7 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                             )
 
                 # attributes grouped
-                for mutated_attribute in snapshot["data"].get("attributes", []):
+                for mutated_attribute in maybe_decompress(snapshot["data"].get("attributes", [])):
                     # attribute mutations come together in a dict
                     # tracking them individually gives confusing counts
                     attribute_fingerprint = "---".join(
@@ -288,8 +302,8 @@ def analyse_recording(file_path: str, source: Literal["s3", "export"]) -> None:
 
 if __name__ == "__main__":
     # TODO get the file path from the command line
-    analyse_recording(
-        "/Users/paul/Downloads/large-sessions/export-0192D664-2FD9-7458-B062-3AD3A52CBD67.ph-recording.json",
-        "export",
-    )
-    # analyse_recording("/Users/paul/Downloads/another/", "s3")
+    # analyse_recording(
+    #     "/Users/paul/Downloads/large-sessions/export-0193b7a1-fa70-71b8-99da-f59c9863420a.ph-recording.json",
+    #     "export",
+    # )
+    analyse_recording("/Users/paul/Downloads/large-sessions/boom", "s3")
