@@ -179,7 +179,17 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
         analysis.message_type_counts[event_type] += 1
 
         if event_type == "IncrementalSnapshot":
-            source_ = incremental_snapshot_event_source[snapshot["data"]["source"]]
+            data_source_ = snapshot["data"].get("source", None)
+            if data_source_ is None:
+                print(f"WoAH unexpected data shape")
+                continue
+
+            try:
+                source_ = incremental_snapshot_event_source[data_source_]
+            except KeyError:
+                print(f"Unknown source {data_source_}")
+                continue
+
             if source_ not in analysis.incremental_snapshot_event_source_counts:
                 analysis.incremental_snapshot_event_source_counts[source_] = SizedCount(
                     0, 0
@@ -302,8 +312,8 @@ def analyse_recording(file_path: str, source: Literal["s3", "export"]) -> None:
 
 if __name__ == "__main__":
     # TODO get the file path from the command line
-    # analyse_recording(
-    #     "/Users/paul/Downloads/large-sessions/export-0193b7a1-fa70-71b8-99da-f59c9863420a.ph-recording.json",
-    #     "export",
-    # )
-    analyse_recording("/Users/paul/Downloads/large-sessions/boom", "s3")
+    analyse_recording(
+        "/Users/paul/Downloads/large-sessions/export-019498a4-1d21-7d1b-9b6f-0b704784ee0f.ph-recording.json",
+        "export",
+    )
+    # analyse_recording("/Users/paul/Downloads/large-sessions/boom", "s3")
