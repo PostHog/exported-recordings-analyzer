@@ -38,6 +38,7 @@ incremental_snapshot_event_source = {
     13: "StyleDeclaration",
     14: "Selection",
     15: "AdoptedStyleSheet",
+    16: "CustomElement",
 }
 
 node_types = {
@@ -60,21 +61,38 @@ node_types = {
 }
 
 
-def analyse_exported_file(file_path: str) -> Analysis:
+def analyse_exported_file(
+    file_path: str, save_uncompressed: bool = False
+) -> tuple[Analysis, List[Dict]]:
     """
     When operating on an "exported recording" then you have one file which has a snapshots key.
     That is an array of JSON objects. each has a window id but is otherwise an rrweb event
     """
     analysis = Analysis.empty()
+    uncompressed_data = []
 
     with open(file_path, "r") as file:
         for list_of_snapshots in ijson.items(file, "data.snapshots"):
-            analysis += analyse_snapshots(list_of_snapshots)
+            snapshot_analysis, snapshot_data = analyse_snapshots(
+                list_of_snapshots, save_uncompressed
+            )
+            analysis += snapshot_analysis
+            uncompressed_data.extend(snapshot_data)
 
-    return analysis
+    return analysis, uncompressed_data
 
 
-def analyse_s3_file(file_path: str) -> Analysis:
+def save_uncompressed_data(file_path: str, uncompressed_data: List[Dict]) -> None:
+    """Save the uncompressed data to a JSON file"""
+    output_path = f"{file_path}_uncompressed.json"
+    with open(output_path, "w") as f:
+        json.dump(uncompressed_data, f, indent=2)
+    print(f"Saved uncompressed data to {output_path}")
+
+
+def analyse_s3_file(
+    file_path: str, save_uncompressed: bool = False
+) -> tuple[Analysis, List[Dict]]:
     """
     If operating on an S3 bucket then you can have multiple files.
     Each file is JSONL (regardless of if its extension is .json)
@@ -83,6 +101,7 @@ def analyse_s3_file(file_path: str) -> Analysis:
     Each item in that array is an rrweb event
     """
     analysis = Analysis.empty()
+    uncompressed_data = []
 
     with open(file_path, "r") as file:
         line_index = -1
@@ -94,14 +113,17 @@ def analyse_s3_file(file_path: str) -> Analysis:
 
             try:
                 json_line = json.loads(line)
-                line_analysis = analyse_snapshots(json_line.get("data", []))
+                line_analysis, line_data = analyse_snapshots(
+                    json_line.get("data", []), save_uncompressed
+                )
                 analysis += line_analysis
+                uncompressed_data.extend(line_data)
             except JSONDecodeError:
                 analysis.unterminated_lines.append(
                     UnterminatedLine(file_path, line_index, line[-20:])
                 )
 
-    return analysis
+    return analysis, uncompressed_data
 
 
 def ensure_all_mutation_types_are_handled(data: Dict) -> None:
@@ -125,10 +147,7 @@ def ensure_all_mutation_types_are_handled(data: Dict) -> None:
         raise ValueError(f"Unhandled mutations: {unhandled_mutations}")
 
 
-
-
-
-def maybe_decompress(x: str | dict| None) -> dict|None:
+def maybe_decompress(x: str | dict | None) -> dict | None:
     if x is None:
         return None
     if isinstance(x, str):
@@ -140,8 +159,11 @@ def maybe_decompress(x: str | dict| None) -> dict|None:
 
 
 # TODO ijson returns any :'(
-def analyse_snapshots(list_of_snapshots: any) -> Analysis:
+def analyse_snapshots(
+    list_of_snapshots: any, collect_uncompressed: bool = False
+) -> tuple[Analysis, List[Dict]]:
     analysis = Analysis.empty()
+    uncompressed_data = []
 
     for snapshot in list_of_snapshots:
         if analysis.first_timestamp is None:
@@ -173,6 +195,10 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
 
         if event_type == "FullSnapshot":
             analysis.full_snapshot_timestamps.append(snapshot["timestamp"])
+            # Decompress the full snapshot data if needed
+            if "data" in snapshot:
+                snapshot["data"] = maybe_decompress(snapshot["data"])
+                snapshot.pop("cv", None)
 
         if event_type not in analysis.message_type_counts:
             analysis.message_type_counts[event_type] = 0
@@ -181,13 +207,14 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
         if event_type == "IncrementalSnapshot":
             data_source_ = snapshot["data"].get("source", None)
             if data_source_ is None:
-                print(f"WoAH unexpected data shape")
+                print("WoAH unexpected data shape")
                 continue
 
             try:
                 source_ = incremental_snapshot_event_source[data_source_]
             except KeyError:
                 print(f"Unknown source {data_source_}")
+                print(snapshot)
                 continue
 
             if source_ not in analysis.incremental_snapshot_event_source_counts:
@@ -208,13 +235,49 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                     # TODO handle them
                     analysis.isAttachIFrameCount += 1
 
-                for removal in maybe_decompress(snapshot["data"].get("removes", [])):
+                # Decompress the data in place if needed
+                if "removes" in snapshot["data"]:
+                    snapshot["data"]["removes"] = maybe_decompress(
+                        snapshot["data"]["removes"]
+                    )
+                if "adds" in snapshot["data"]:
+                    snapshot["data"]["adds"] = maybe_decompress(
+                        snapshot["data"]["adds"]
+                    )
+                if "attributes" in snapshot["data"]:
+                    snapshot["data"]["attributes"] = maybe_decompress(
+                        snapshot["data"]["attributes"]
+                    )
+
+                if "texts" in snapshot["data"]:
+                    snapshot["data"]["texts"] = maybe_decompress(
+                        snapshot["data"]["texts"]
+                    )
+
+                snapshot.pop("cv", None)
+
+                for removal in snapshot["data"].get("removes", []):
+                    node_id = removal["id"]
+                    if node_id not in analysis.removal_by_node_id:
+                        analysis.removal_by_node_id[node_id] = SizedCount(0, 0)
+
+                    analysis.removal_by_node_id[node_id] += len(
+                        json.dumps(removal, separators=(",", ":"))
+                    )
                     analysis.mutation_removal_count += len(
                         json.dumps(removal, separators=(",", ":"))
                     )
 
-                for addition in maybe_decompress(snapshot["data"].get("adds", [])):
+                for addition in snapshot["data"].get("adds", []):
                     if "node" in addition:
+                        node_id = addition["parentId"]
+                        if node_id not in analysis.addition_by_node_id:
+                            analysis.addition_by_node_id[node_id] = SizedCount(0, 0)
+
+                        analysis.addition_by_node_id[node_id] += len(
+                            json.dumps(addition, separators=(",", ":"))
+                        )
+
                         node_type = node_types[addition["node"]["type"]]
                         if node_type not in analysis.mutation_addition_counts:
                             analysis.mutation_addition_counts[node_type] = SizedCount(
@@ -229,19 +292,19 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                             "textContent", json.dumps(addition["node"])
                         )[:300]
                         if keyable_value not in analysis.mutation_addition_by_value:
-                            analysis.mutation_addition_by_value[
-                                keyable_value
-                            ] = SizedCount(0, 0)
-                        analysis.mutation_addition_by_value[
-                            keyable_value
-                        ] += addition_size
+                            analysis.mutation_addition_by_value[keyable_value] = (
+                                SizedCount(0, 0)
+                            )
+                        analysis.mutation_addition_by_value[keyable_value] += (
+                            addition_size
+                        )
                     else:
                         # print("ooh a mobile recording")
                         # print(json.dumps(addition, separators=(",", ":")))
                         pass
 
                 ## attributes individually
-                for altered_attribute in maybe_decompress(snapshot["data"].get("attributes", [])):
+                for altered_attribute in snapshot["data"].get("attributes", []):
                     if "attributes" not in altered_attribute:
                         # print("ooh a mobile recording")
                         # print(json.dumps(altered_attribute, separators=(",", ":")))
@@ -258,14 +321,14 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                                 analysis.individual_mutation_attributes_counts[
                                     changed
                                 ] = SizedCount(0, 0)
-                            analysis.individual_mutation_attributes_counts[
-                                changed
-                            ] += len(
-                                json.dumps(altered_attribute["attributes"][changed])
+                            analysis.individual_mutation_attributes_counts[changed] += (
+                                len(
+                                    json.dumps(altered_attribute["attributes"][changed])
+                                )
                             )
 
                 # attributes grouped
-                for mutated_attribute in maybe_decompress(snapshot["data"].get("attributes", [])):
+                for mutated_attribute in snapshot["data"].get("attributes", []):
                     # attribute mutations come together in a dict
                     # tracking them individually gives confusing counts
                     attribute_fingerprint = "---".join(
@@ -288,32 +351,57 @@ def analyse_snapshots(list_of_snapshots: any) -> Analysis:
                     )
 
                 for text in snapshot["data"].get("texts", []):
+                    node_id = text["id"]
+                    if node_id not in analysis.text_by_node_id:
+                        analysis.text_by_node_id[node_id] = SizedCount(0, 0)
+                    analysis.text_by_node_id[node_id] += len(text)
                     analysis.text_mutation_count += len(text)
 
-    return analysis
+        if collect_uncompressed:
+            # Store the snapshot after all decompression has been done
+            uncompressed_data.append(snapshot)
+
+    return analysis, uncompressed_data
 
 
-def analyse_recording(file_path: str, source: Literal["s3", "export"]) -> None:
+def analyse_recording(
+    file_path: str, source: Literal["s3", "export"], save_uncompressed: bool = False
+) -> None:
     analysis = Analysis.empty()
+    all_uncompressed_data = []
 
     if source == "export":
-        analysis = analyse_exported_file(file_path)
+        analysis, uncompressed_data = analyse_exported_file(
+            file_path, save_uncompressed
+        )
+        all_uncompressed_data.extend(uncompressed_data)
     elif source == "s3":
-        # open each file in the provided directoryatch
+        # open each file in the provided directory
         sorted_files = sorted(os.listdir(file_path))
         for file_name in sorted_files:
             print(f"processing file: {file_name}")
-            analysis += analyse_s3_file(os.path.join(file_path, file_name))
+            file_analysis, uncompressed_data = analyse_s3_file(
+                os.path.join(file_path, file_name), save_uncompressed
+            )
+            analysis += file_analysis
+            all_uncompressed_data.extend(uncompressed_data)
     else:
         raise ValueError(f"Unknown source {source}")
 
     print(analysis)
 
+    if save_uncompressed and all_uncompressed_data:
+        save_uncompressed_data(file_path, all_uncompressed_data)
+
 
 if __name__ == "__main__":
     # TODO get the file path from the command line
+    # analyse_recording(
+    #     "/Users/paul/Downloads/large-sessions/export-019498a4-1d21-7d1b-9b6f-0b704784ee0f.ph-recording.json",
+    #     "export",
+    # )
     analyse_recording(
-        "/Users/paul/Downloads/large-sessions/export-019498a4-1d21-7d1b-9b6f-0b704784ee0f.ph-recording.json",
-        "export",
+        "/Users/pauldambra/Downloads/01959b9e-478d-775a-b341-4a86e04a0e27",
+        "s3",
+        save_uncompressed=True,
     )
-    # analyse_recording("/Users/paul/Downloads/large-sessions/boom", "s3")

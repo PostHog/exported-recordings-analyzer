@@ -66,6 +66,10 @@ class Analysis:
     isAttachIFrameCount: int
     mutation_addition_by_value: Dict[str, SizedCount]
 
+    removal_by_node_id: Dict[str, SizedCount]
+    addition_by_node_id: Dict[str, SizedCount]
+    text_by_node_id: Dict[str, SizedCount]
+
     @staticmethod
     def empty() -> "Analysis":
         return Analysis(
@@ -85,6 +89,9 @@ class Analysis:
             plugin_counts={},
             console_log_counts={},
             mutation_addition_by_value={},
+            removal_by_node_id={},
+            addition_by_node_id={},
+            text_by_node_id={},
         )
 
     def __add__(self, other: "Analysis") -> "Analysis":
@@ -132,6 +139,15 @@ class Analysis:
             full_snapshot_timestamps=self.full_snapshot_timestamps
             + other.full_snapshot_timestamps,
             isAttachIFrameCount=self.isAttachIFrameCount + other.isAttachIFrameCount,
+            removal_by_node_id=_combine_sized_count_dicts(
+                self.removal_by_node_id, other.removal_by_node_id
+            ),
+            addition_by_node_id=_combine_sized_count_dicts(
+                self.addition_by_node_id, other.addition_by_node_id
+            ),
+            text_by_node_id=_combine_sized_count_dicts(
+                self.text_by_node_id, other.text_by_node_id
+            ),
         )
 
     def max_of_two_timestamps(self, other):
@@ -204,7 +220,39 @@ Top 10 Mutations by size:
 Largest additions:
 {additions_overview}
 
+Top 10 removals by size:
+{self.top_ten_sized(self.removal_by_node_id)}
+
+Top 10 additions by size:
+{self.top_ten_sized(self.addition_by_node_id)}
+
+Top 10 removals by count:
+{self.top_ten_counted(self.removal_by_node_id)}
+
+Top 10 additions by count:
+{self.top_ten_counted(self.addition_by_node_id)}
+
+Top 10 text mutations by size:
+{self.top_ten_sized(self.text_by_node_id)}
+
+Top 10 text mutations by count:
+{self.top_ten_counted(self.text_by_node_id)}
 """
+
+    @staticmethod
+    def top_ten_counted(
+        candidates: Dict[str, SizedCount], truncate: bool = False
+    ) -> str:
+        return "\n".join(
+            [
+                f"{k[:20] if truncate else k}: {v}"
+                for k, v in sorted(
+                    candidates.items(),
+                    key=lambda item: item[1].count,
+                    reverse=True,
+                )
+            ][0:10]
+        )
 
     @staticmethod
     def top_ten_sized(candidates: Dict[str, SizedCount], truncate: bool = False) -> str:
