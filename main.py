@@ -1,6 +1,6 @@
 import gzip
 import os
-
+import copy
 
 from simplejson import JSONDecodeError
 
@@ -62,37 +62,42 @@ node_types = {
 
 
 def analyse_exported_file(
-    file_path: str, save_uncompressed: bool = False
-) -> tuple[Analysis, List[Dict]]:
+    file_path: str, save_uncompressed: bool = False, save_compressed: bool = False
+) -> tuple[Analysis, List[Dict], List[Dict]]:
     """
     When operating on an "exported recording" then you have one file which has a snapshots key.
     That is an array of JSON objects. each has a window id but is otherwise an rrweb event
     """
     analysis = Analysis.empty()
     uncompressed_data = []
-
+    compressed_data = []
     with open(file_path, "r") as file:
         for list_of_snapshots in ijson.items(file, "data.snapshots"):
-            snapshot_analysis, snapshot_data = analyse_snapshots(
-                list_of_snapshots, save_uncompressed
+            snapshot_analysis, snapshot_data, snapshot_compressed_data = (
+                analyse_snapshots(list_of_snapshots, save_uncompressed, save_compressed)
             )
             analysis += snapshot_analysis
             uncompressed_data.extend(snapshot_data)
+            compressed_data.extend(snapshot_compressed_data)
 
-    return analysis, uncompressed_data
+    return analysis, uncompressed_data, compressed_data
 
 
-def save_uncompressed_data(file_path: str, uncompressed_data: List[Dict]) -> None:
-    """Save the uncompressed data to a JSON file"""
-    output_path = f"{file_path}_uncompressed.json"
+def save_data_to_file(
+    file_path: str,
+    state: Literal["uncompressed", "compressed", "rrrweb-only"],
+    data: List[Dict],
+) -> None:
+    """Save the data to a JSON file"""
+    output_path = f"{file_path}_{state}.json"
     with open(output_path, "w") as f:
-        json.dump(uncompressed_data, f, indent=2)
-    print(f"Saved uncompressed data to {output_path}")
+        json.dump(data, f, indent=2)
+    print(f"Saved {state} data to {output_path}")
 
 
 def analyse_s3_file(
-    file_path: str, save_uncompressed: bool = False
-) -> tuple[Analysis, List[Dict]]:
+    file_path: str, save_uncompressed: bool = False, save_compressed: bool = False
+) -> tuple[Analysis, List[Dict], List[Dict]]:
     """
     If operating on an S3 bucket then you can have multiple files.
     Each file is JSONL (regardless of if its extension is .json)
@@ -102,7 +107,7 @@ def analyse_s3_file(
     """
     analysis = Analysis.empty()
     uncompressed_data = []
-
+    compressed_data = []
     with open(file_path, "r") as file:
         line_index = -1
         for line in file:
@@ -113,17 +118,26 @@ def analyse_s3_file(
 
             try:
                 json_line = json.loads(line)
-                line_analysis, line_data = analyse_snapshots(
-                    json_line.get("data", []), save_uncompressed
+                line_analysis, line_data, uncompressed_line_data = analyse_snapshots(
+                    json_line.get("data", []), save_uncompressed, save_compressed
                 )
                 analysis += line_analysis
-                uncompressed_data.extend(line_data)
+
+                window_id = json_line["window_id"]
+
+                uncompressed_data.extend(
+                    [{**x, "window_id": window_id} for x in line_data]
+                )
+
+                compressed_data.extend(
+                    [{**x, "window_id": window_id} for x in uncompressed_line_data]
+                )
             except JSONDecodeError:
                 analysis.unterminated_lines.append(
                     UnterminatedLine(file_path, line_index, line[-20:])
                 )
 
-    return analysis, uncompressed_data
+    return analysis, uncompressed_data, compressed_data
 
 
 def ensure_all_mutation_types_are_handled(data: Dict) -> None:
@@ -160,12 +174,19 @@ def maybe_decompress(x: str | dict | None) -> dict | None:
 
 # TODO ijson returns any :'(
 def analyse_snapshots(
-    list_of_snapshots: any, collect_uncompressed: bool = False
-) -> tuple[Analysis, List[Dict]]:
+    list_of_snapshots: any,
+    collect_uncompressed: bool = False,
+    collect_compressed: bool = False,
+) -> tuple[Analysis, List[Dict], List[Dict]]:
     analysis = Analysis.empty()
     uncompressed_data = []
+    compressed_data = []
 
     for snapshot in list_of_snapshots:
+        if collect_compressed:
+            # Store a deep copy of the original snapshot before any decompression
+            compressed_data.append(copy.deepcopy(snapshot))
+
         if analysis.first_timestamp is None:
             analysis.first_timestamp = snapshot["timestamp"]
         if analysis.last_timestamp is None:
@@ -358,40 +379,64 @@ def analyse_snapshots(
                     analysis.text_mutation_count += len(text)
 
         if collect_uncompressed:
-            # Store the snapshot after all decompression has been done
-            uncompressed_data.append(snapshot)
+            # Store a deep copy of the snapshot after all decompression has been done
+            uncompressed_data.append(copy.deepcopy(snapshot))
 
-    return analysis, uncompressed_data
+    return analysis, uncompressed_data, compressed_data
 
 
 def analyse_recording(
-    file_path: str, source: Literal["s3", "export"], save_uncompressed: bool = False
+    file_path: str,
+    source: Literal["s3", "export"],
+    save_uncompressed: bool = False,
+    save_compressed: bool = False,
 ) -> None:
     analysis = Analysis.empty()
     all_uncompressed_data = []
+    all_compressed_data = []
 
     if source == "export":
-        analysis, uncompressed_data = analyse_exported_file(
-            file_path, save_uncompressed
+        analysis, uncompressed_data, compressed_data = analyse_exported_file(
+            file_path, save_uncompressed, save_compressed
         )
         all_uncompressed_data.extend(uncompressed_data)
+        all_compressed_data.extend(compressed_data)
     elif source == "s3":
         # open each file in the provided directory
         sorted_files = sorted(os.listdir(file_path))
         for file_name in sorted_files:
             print(f"processing file: {file_name}")
-            file_analysis, uncompressed_data = analyse_s3_file(
-                os.path.join(file_path, file_name), save_uncompressed
+            file_analysis, uncompressed_data, compressed_data = analyse_s3_file(
+                os.path.join(file_path, file_name), save_uncompressed, save_compressed
             )
             analysis += file_analysis
             all_uncompressed_data.extend(uncompressed_data)
+            all_compressed_data.extend(compressed_data)
     else:
         raise ValueError(f"Unknown source {source}")
 
     print(analysis)
 
+    if save_compressed and all_compressed_data:
+        fake_exported_file = {
+            "version": "2023-04-28",
+            "data": {
+                "id": "unknown",
+                "snapshots": all_compressed_data,
+            },
+        }
+        save_data_to_file(file_path, "compressed", fake_exported_file)
+
     if save_uncompressed and all_uncompressed_data:
-        save_uncompressed_data(file_path, all_uncompressed_data)
+        fake_exported_file = {
+            "version": "2023-04-28",
+            "data": {
+                "id": "unknown",
+                "snapshots": all_uncompressed_data,
+            },
+        }
+        save_data_to_file(file_path, "uncompressed", fake_exported_file)
+        save_data_to_file(file_path, "rrrweb-only", all_uncompressed_data)
 
 
 if __name__ == "__main__":
@@ -402,6 +447,8 @@ if __name__ == "__main__":
     # )
     analyse_recording(
         "/Users/pauldambra/Downloads/01959b9e-478d-775a-b341-4a86e04a0e27",
+        # "/Users/pauldambra/Downloads/0195b8dd-947a-7ac5-ad3b-48b250b99c72",
         "s3",
         save_uncompressed=True,
+        save_compressed=True,
     )
